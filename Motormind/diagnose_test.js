@@ -189,3 +189,39 @@ test('empate real sin fusión (Golf: bujias y caudalimetro en 0,35) se desempata
     'carbonilla',
   ]);
 });
+
+test('discarded: quita las causas ya descartadas y conserva el orden y las probabilidades', () => {
+  const base = diagnose({ vehicleId: 'tiggo4-15t', codes: ['P0301'] });
+  const r = diagnose({ vehicleId: 'tiggo4-15t', codes: ['P0301'], discarded: ['bujias'] });
+  assert.deepEqual(r.causes.map((c) => c.id), ['bobina-cil1', 'inyector-cil1']);
+  assert.deepEqual(r.causes, base.causes.filter((c) => c.id !== 'bujias'));
+});
+
+test('discarded: una causa compartida se descarta para todos los códigos y los ids desconocidos se ignoran', () => {
+  const r = diagnose({ vehicleId: 'tiggo4-15t', codes: ['P0300', 'P0301'], discarded: [' BUJIAS ', 'no-existe'] });
+  assert.ok(!r.causes.some((c) => c.id === 'bujias'));
+  assert.ok(r.causes.length > 0);
+});
+
+test('discarded: omitido o vacío no cambia el resultado, y un valor inválido es un error', () => {
+  const base = diagnose({ vehicleId: 'tiggo4-15t', codes: ['P0301'] });
+  assert.deepEqual(diagnose({ vehicleId: 'tiggo4-15t', codes: ['P0301'], discarded: [] }), base);
+  assert.throws(() => diagnose({ vehicleId: 'tiggo4-15t', codes: ['P0301'], discarded: 'bujias' }), TypeError);
+});
+
+test('normalize: las probabilidades de las causas que quedan suman 1 y conservan el orden', () => {
+  const base = diagnose({ vehicleId: 'tiggo4-15t', codes: ['P0301'], discarded: ['bujias'] });
+  const r = diagnose({ vehicleId: 'tiggo4-15t', codes: ['P0301'], discarded: ['bujias'], normalize: true });
+  const total = base.causes.reduce((s, c) => s + c.probability, 0);
+  assert.deepEqual(r.causes.map((c) => c.id), base.causes.map((c) => c.id));
+  assert.ok(Math.abs(r.causes.reduce((s, c) => s + c.probability, 0) - 1) < 1e-9);
+  r.causes.forEach((c, i) => assert.ok(Math.abs(c.probability - base.causes[i].probability / total) < 1e-9));
+});
+
+test('normalize: por defecto es false y sin causas no falla', () => {
+  const base = diagnose({ vehicleId: 'tiggo4-15t', codes: ['P0301'] });
+  assert.deepEqual(diagnose({ vehicleId: 'tiggo4-15t', codes: ['P0301'], normalize: false }), base);
+  assert.equal(base.causes[0].probability, 0.45);
+  const vacio = diagnose({ vehicleId: 'tiggo4-15t', codes: ['XXXX'], normalize: true });
+  assert.deepEqual(vacio.causes, []);
+});

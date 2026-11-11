@@ -2,10 +2,11 @@ import { readFileSync } from 'node:fs';
 
 const manual = JSON.parse(readFileSync(new URL('./data/manual.json', import.meta.url), 'utf8'));
 
-const normalize = (code) => code.trim().toUpperCase();
+const normalizeCode = (code) => code.trim().toUpperCase();
+const normalizeCauseId = (id) => id.trim().toLowerCase();
 
 /**
- * @param {{ vehicleId: string, codes: string[] }} input
+ * @param {{ vehicleId: string, codes: string[], discarded?: string[], normalize?: boolean }} input
  * @returns {{
  *   vehicle: string,
  *   codes: { code: string, description: string }[],
@@ -16,7 +17,7 @@ const normalize = (code) => code.trim().toUpperCase();
  *   }[]
  * }}
  */
-export function diagnose({ vehicleId, codes }) {
+export function diagnose({ vehicleId, codes, discarded = [], normalize = false }) {
   const vehicle = manual.vehicles.find((v) => v.id === vehicleId);
   if (!vehicle) throw new Error(`Vehículo no encontrado: ${vehicleId}`);
 
@@ -24,13 +25,19 @@ export function diagnose({ vehicleId, codes }) {
     throw new TypeError('codes debe ser un array de strings');
   }
 
-  // Manual keys are normalized too: some come with stray whitespace (e.g. "P0420 ")
-  const byCode = new Map(Object.entries(vehicle.codes).map(([code, entry]) => [normalize(code), entry]));
+  if (!Array.isArray(discarded) || discarded.some((id) => typeof id !== 'string')) {
+    throw new TypeError('discarded debe ser un array de strings');
+  }
+  // Causas que el mecánico ya descartó. Los ids desconocidos se ignoran (no hay nada que quitar).
+  const discardedSet = new Set(discarded.map(normalizeCauseId));
+
+  // Las claves introducidas manualmente también se normalizan: algunas contienen espacios en blanco adicionales (p. ej., "P0420 ")
+  const byCode = new Map(Object.entries(vehicle.codes).map(([code, entry]) => [normalizeCode(code), entry]));
 
   const found = [];
   const notFound = [];
-  // Normalized, unique and sorted, so the output only depends on the set of codes, not on their order
-  for (const code of [...new Set(codes.map(normalize))].sort()) {
+  // Normalizado, único y ordenado, de modo que el resultado solo depende del conjunto de códigos, no de su orden
+  for (const code of [...new Set(codes.map(normalizeCode))].sort()) {
     if (byCode.has(code)) {
       found.push({ code, description: byCode.get(code).description });
     } else {
@@ -51,13 +58,20 @@ export function diagnose({ vehicleId, codes }) {
     return acc;
   }, new Map());
 
-  const causes = [...merged.values()]
-    // The manual comes from parsed PDFs and may reference causes it never defines: skip those, keep the rest
+  const remaining = [...merged.values()]
+    // El manual proviene de archivos PDF analizados y puede hacer referencia a causas que nunca llega a definir: omítelas y conserva el resto.
     .filter(({ id }) => Object.hasOwn(vehicle.causes, id))
+    .filter(({ id }) => !discardedSet.has(id));
+
+  // Opcional: reparte la probabilidad solo entre las causas que quedan, de modo que sumen 1
+  const total = remaining.reduce((sum, { probability }) => sum + probability, 0);
+  const scale = normalize && total > 0 ? total : 1;
+
+  const causes = remaining
     .map(({ id, probability, codes: causeCodes }) => {
       const { title, component, steps } = vehicle.causes[id];
-      // Copy the steps so callers cannot mutate the in-memory manual through the result
-      return { id, title, component, probability, codes: causeCodes, steps: steps.map((s) => ({ ...s })) };
+      // Copia los pasos para que quienes realizan la llamada no puedan modificar el manual en memoria a través del resultado
+      return { id, title, component, probability: probability / scale, codes: causeCodes, steps: steps.map((s) => ({ ...s })) };
     })
     .sort((a, b) => b.probability - a.probability || (a.id < b.id ? -1 : 1));
 
